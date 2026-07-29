@@ -1,0 +1,179 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/shinderuman/local-web-app-server/internal/config"
+	"github.com/shinderuman/local-web-app-server/internal/instance"
+	"github.com/shinderuman/local-web-app-server/internal/logging"
+	appserver "github.com/shinderuman/local-web-app-server/internal/server"
+)
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "local-web-app-server:", err)
+		os.Exit(1)
+	}
+}
+
+func run(arguments []string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("find home directory: %w", err)
+	}
+	defaultApps := filepath.Join(home, "Library", "Application Support", "LocalWebAppServer", "apps")
+	defaultLogs := filepath.Join(home, "Library", "Logs", "LocalWebAppServer")
+	defaultRuntime := filepath.Join("/private/tmp", "local-web-app-server-"+strconv.Itoa(os.Getuid()))
+
+	flags := flag.NewFlagSet("local-web-app-server", flag.ContinueOnError)
+	appsDirectory := stringFlag(flags, "apps", "a", defaultApps, "installed app directory")
+	listenAddress := stringFlag(flags, "listen", "l", "127.0.0.1:8765", "HTTP listen address")
+	runtimeDirectory := stringFlag(flags, "runtime", "r", defaultRuntime, "runtime directory")
+	logDirectory := stringFlag(flags, "log-directory", "g", defaultLogs, "log directory")
+	openBrowser := boolFlag(flags, "open", "o", false, "open the app list in the default browser")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if err := validateListenAddress(*listenAddress); err != nil {
+		return err
+	}
+
+	lock, err := instance.Acquire(*runtimeDirectory)
+	if errors.Is(err, instance.ErrAlreadyRunning) {
+		status, statusErr := instance.ReadStatus(*runtimeDirectory)
+		if statusErr != nil {
+			return fmt.Errorf("%w, but its status cannot be read: %v", err, statusErr)
+		}
+		if healthErr := confirmRunning(status.URL); healthErr != nil {
+			return fmt.Errorf("%w, but its health check failed: %v", instance.ErrAlreadyRunning, healthErr)
+		}
+		fmt.Println(status.URL)
+		if *openBrowser {
+			return openURL(status.URL)
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	logger, logCloser, err := logging.OpenServer(*logDirectory)
+	if err != nil {
+		return err
+	}
+	defer logCloser.Close()
+
+	if err := os.MkdirAll(*appsDirectory, 0o755); err != nil {
+		return fmt.Errorf("create apps directory: %w", err)
+	}
+	apps, err := config.LoadApps(*appsDirectory)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", *listenAddress)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	defer listener.Close()
+	url := "http://" + listener.Addr().String()
+	if err := lock.WriteStatus(instance.Status{PID: os.Getpid(), URL: url}); err != nil {
+		return err
+	}
+
+	server := appserver.New(apps, *runtimeDirectory, *logDirectory, logger)
+	server.StartBackends(context.Background())
+	httpServer := &http.Server{
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	serveErrors := make(chan error, 1)
+	go func() {
+		serveErrors <- httpServer.Serve(listener)
+	}()
+	logger.Info("server ready", "url", url, "apps", len(apps))
+	fmt.Println(url)
+	if *openBrowser {
+		if err := openURL(url); err != nil {
+			logger.Warn("could not open browser", "error", err)
+		}
+	}
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case received := <-signals:
+		logger.Info("shutdown requested", "signal", received)
+	case serveErr := <-serveErrors:
+		if !errors.Is(serveErr, http.ErrServerClosed) {
+			return fmt.Errorf("serve HTTP: %w", serveErr)
+		}
+	}
+
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	httpErr := httpServer.Shutdown(shutdownContext)
+	backendErr := server.StopBackends()
+	return errors.Join(httpErr, backendErr)
+}
+
+func stringFlag(flags *flag.FlagSet, long, short, defaultValue, usage string) *string {
+	value := flags.String(long, defaultValue, usage)
+	flags.StringVar(value, short, defaultValue, usage+" (short)")
+	return value
+}
+
+func boolFlag(flags *flag.FlagSet, long, short string, defaultValue bool, usage string) *bool {
+	value := flags.Bool(long, defaultValue, usage)
+	flags.BoolVar(value, short, defaultValue, usage+" (short)")
+	return value
+}
+
+func validateListenAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid listen address: %w", err)
+	}
+	if host != "127.0.0.1" {
+		return errors.New("listen address must use 127.0.0.1")
+	}
+	return nil
+}
+
+func confirmRunning(baseURL string) error {
+	client := http.Client{Timeout: time.Second}
+	response, err := client.Get(baseURL + "/_local/health")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("health status is %s", response.Status)
+	}
+	return nil
+}
+
+func openURL(url string) error {
+	command := exec.Command("open", url)
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("open browser: %w", err)
+	}
+	return nil
+}
