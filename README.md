@@ -5,8 +5,9 @@ applications on macOS. The host owns loopback HTTP, process lifecycle, static
 file isolation, Unix-domain-socket proxying, and local logs. Each application
 owns its UI and backend.
 
-The server deliberately has no TLS, authentication, LAN mode, internet
-exposure, or arbitrary command API. It binds only to `127.0.0.1`.
+The server deliberately has no TLS, authentication, internet exposure, or
+arbitrary command API. It binds to `127.0.0.1` by default and can explicitly
+bind to `0.0.0.0` for use on a trusted LAN.
 
 ## Build and install
 
@@ -73,7 +74,9 @@ to finish its own in-progress work.
 ```sh
 local-web-app-server
 local-web-app-server --open
+local-web-app-server --stop
 local-web-app-server --apps /path/to/apps --listen 127.0.0.1:8765
+local-web-app-server --listen 0.0.0.0:8765
 ```
 
 Every long option has a short form:
@@ -84,6 +87,7 @@ Every long option has a short form:
 -r, --runtime
 -g, --log-directory
 -o, --open
+-s, --stop
 ```
 
 Defaults:
@@ -97,6 +101,15 @@ prints its URL, and exits successfully. Backend processes start once with the
 host. A failed backend is shown as unavailable without restarting it or
 affecting other apps.
 
+`--stop` sends the running host a graceful termination request and waits for
+all application backends to finish their declared shutdown behavior. It is
+safe to use before replacing installed application binaries.
+
+When listening on `0.0.0.0`, the printed/status URL remains the local
+`127.0.0.1` URL. Other computers use
+`http://<server-mac-LAN-address>:8765/`. Work requested through an app still
+runs in that app's backend process on the server Mac.
+
 ## Routes
 
 - `/`: generic installed-app list
@@ -107,7 +120,9 @@ affecting other apps.
 
 ## Security boundary
 
-This is a trusted, single-user local application host. Installed manifests and
+This is a trusted local or trusted-LAN application host. It has no TLS or HTTP
+authentication, so `0.0.0.0` must not be used on an untrusted network or with
+router port forwarding. Installed manifests and
 backend executables are trusted local files, but URL paths are untrusted.
 Manifest parsing rejects unknown fields, escaping paths, web symlinks,
 non-executable backends, duplicate IDs, and invalid shutdown timeouts. There is

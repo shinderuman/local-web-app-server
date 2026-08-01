@@ -2,13 +2,14 @@
 
 ## Project
 
-Local Web App Server is a macOS-only loopback HTTP host for independently
+Local Web App Server is a macOS-only HTTP host for independently
 installed local web applications. It serves each app's declared static files
 and proxies only that app's `/api/` routes to its Unix-domain-socket backend.
 
 ## Invariants
 
-- Bind only to `127.0.0.1`; do not add LAN or internet exposure.
+- Bind only to explicit loopback (`127.0.0.1`) or trusted-LAN (`0.0.0.0`) mode;
+  do not add internet exposure.
 - Keep the host generic. It must not contain app-specific UI, state, or logic.
 - Do not accept shell commands or arbitrary executable paths from HTTP.
 - Serve only files below each manifest's `web_root`.

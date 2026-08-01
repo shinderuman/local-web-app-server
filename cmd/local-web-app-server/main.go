@@ -44,6 +44,7 @@ func run(arguments []string) error {
 	runtimeDirectory := stringFlag(flags, "runtime", "r", defaultRuntime, "runtime directory")
 	logDirectory := stringFlag(flags, "log-directory", "g", defaultLogs, "log directory")
 	openBrowser := boolFlag(flags, "open", "o", false, "open the app list in the default browser")
+	stopServer := boolFlag(flags, "stop", "s", false, "gracefully stop the running server")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -55,6 +56,22 @@ func run(arguments []string) error {
 	}
 
 	lock, err := instance.Acquire(*runtimeDirectory)
+	if *stopServer {
+		if err == nil {
+			return lock.Close()
+		}
+		if !errors.Is(err, instance.ErrAlreadyRunning) {
+			return err
+		}
+		status, statusErr := instance.ReadStatus(*runtimeDirectory)
+		if statusErr != nil {
+			return fmt.Errorf("read running server status: %w", statusErr)
+		}
+		if signalErr := syscall.Kill(status.PID, syscall.SIGTERM); signalErr != nil && !errors.Is(signalErr, syscall.ESRCH) {
+			return fmt.Errorf("stop running server: %w", signalErr)
+		}
+		return waitForProcessExit(status.PID, processExists, time.Sleep)
+	}
 	if errors.Is(err, instance.ErrAlreadyRunning) {
 		status, statusErr := instance.ReadStatus(*runtimeDirectory)
 		if statusErr != nil {
@@ -92,7 +109,7 @@ func run(arguments []string) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	defer listener.Close()
-	url := "http://" + listener.Addr().String()
+	url := localURL(listener.Addr())
 	if err := lock.WriteStatus(instance.Status{PID: os.Getpid(), URL: url}); err != nil {
 		return err
 	}
@@ -151,10 +168,19 @@ func validateListenAddress(address string) error {
 	if err != nil {
 		return fmt.Errorf("invalid listen address: %w", err)
 	}
-	if host != "127.0.0.1" {
-		return errors.New("listen address must use 127.0.0.1")
+	if host != "127.0.0.1" && host != "0.0.0.0" {
+		return errors.New("listen address must use 127.0.0.1 or 0.0.0.0")
 	}
 	return nil
+}
+
+func localURL(address net.Addr) string {
+	host, port, err := net.SplitHostPort(address.String())
+	if err == nil && (host == "0.0.0.0" || host == "::") {
+		host = "127.0.0.1"
+		return "http://" + net.JoinHostPort(host, port)
+	}
+	return "http://" + address.String()
 }
 
 func confirmRunning(baseURL string) error {
@@ -176,4 +202,28 @@ func openURL(url string) error {
 		return fmt.Errorf("open browser: %w", err)
 	}
 	return nil
+}
+
+func processExists(pid int) (bool, error) {
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	return false, err
+}
+
+func waitForProcessExit(pid int, exists func(int) (bool, error), pause func(time.Duration)) error {
+	for {
+		running, err := exists(pid)
+		if err != nil {
+			return fmt.Errorf("check running server: %w", err)
+		}
+		if !running {
+			return nil
+		}
+		pause(100 * time.Millisecond)
+	}
 }
