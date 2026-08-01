@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"net"
@@ -19,6 +20,28 @@ func TestValidateListenAddress(t *testing.T) {
 		if err := validateListenAddress(address); err == nil {
 			t.Errorf("%q unexpectedly accepted", address)
 		}
+	}
+}
+
+func TestShutdownServicesStopsBackendsBeforeHTTP(t *testing.T) {
+	var order []string
+	backendFailure := errors.New("backend failure")
+	httpFailure := errors.New("HTTP failure")
+	err := shutdownServices(func() error {
+		order = append(order, "backends")
+		return backendFailure
+	}, func(ctx context.Context) error {
+		if ctx == nil {
+			t.Fatal("shutdown context is nil")
+		}
+		order = append(order, "HTTP")
+		return httpFailure
+	})
+	if len(order) != 2 || order[0] != "backends" || order[1] != "HTTP" {
+		t.Fatalf("shutdown order = %v", order)
+	}
+	if !errors.Is(err, backendFailure) || !errors.Is(err, httpFailure) {
+		t.Fatalf("shutdown error = %v", err)
 	}
 }
 
