@@ -75,8 +75,8 @@ to finish its own in-progress work.
 local-web-app-server
 local-web-app-server --open
 local-web-app-server --stop
-local-web-app-server --apps /path/to/apps --listen 127.0.0.1:8765
-local-web-app-server --listen 0.0.0.0:8765
+local-web-app-server --apps /path/to/apps --listen 127.0.0.1:8766
+local-web-app-server --listen 0.0.0.0:8766
 ```
 
 Every long option has a short form:
@@ -92,7 +92,7 @@ Every long option has a short form:
 
 Defaults:
 
-- Listen address: `127.0.0.1:8765`
+- Listen address: `127.0.0.1:8766`
 - Runtime data: `/private/tmp/local-web-app-server-<uid>`
 - Logs: `~/Library/Logs/LocalWebAppServer`
 
@@ -107,7 +107,7 @@ safe to use before replacing installed application binaries.
 
 When listening on `0.0.0.0`, the printed/status URL remains the local
 `127.0.0.1` URL. Other computers use
-`http://<server-mac-LAN-address>:8765/`. Work requested through an app still
+`http://<server-mac-LAN-address>:8766/`. Work requested through an app still
 runs in that app's backend process on the server Mac.
 
 ## Routes

@@ -40,7 +40,7 @@ func run(arguments []string) error {
 
 	flags := flag.NewFlagSet("local-web-app-server", flag.ContinueOnError)
 	appsDirectory := stringFlag(flags, "apps", "a", defaultApps, "installed app directory")
-	listenAddress := stringFlag(flags, "listen", "l", "127.0.0.1:8765", "HTTP listen address")
+	listenAddress := stringFlag(flags, "listen", "l", "127.0.0.1:8766", "HTTP listen address")
 	runtimeDirectory := stringFlag(flags, "runtime", "r", defaultRuntime, "runtime directory")
 	logDirectory := stringFlag(flags, "log-directory", "g", defaultLogs, "log directory")
 	openBrowser := boolFlag(flags, "open", "o", false, "open the app list in the default browser")
