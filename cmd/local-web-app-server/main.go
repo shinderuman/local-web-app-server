@@ -144,11 +144,18 @@ func run(arguments []string) error {
 		}
 	}
 
+	return shutdownServices(server.StopBackends, httpServer.Shutdown)
+}
+
+func shutdownServices(stopBackends func() error, shutdownHTTP func(context.Context) error) error {
+	// Stop backends first so long-lived proxied responses such as SSE close before
+	// the host waits for HTTP handlers. The listener remains available during the
+	// backend-specific graceful wait, but stopping backends reject new API work.
+	backendErr := stopBackends()
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	httpErr := httpServer.Shutdown(shutdownContext)
-	backendErr := server.StopBackends()
-	return errors.Join(httpErr, backendErr)
+	httpErr := shutdownHTTP(shutdownContext)
+	return errors.Join(backendErr, httpErr)
 }
 
 func stringFlag(flags *flag.FlagSet, long, short, defaultValue, usage string) *string {
