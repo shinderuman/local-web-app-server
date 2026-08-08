@@ -45,6 +45,7 @@ func Run(arguments []string) error {
 	logDirectory := stringFlag(flags, "log-directory", "g", defaultLogs, "log directory")
 	openBrowser := boolFlag(flags, "open", "o", false, "open the app list in the default browser")
 	stopServer := boolFlag(flags, "stop", "s", false, "gracefully stop the running server")
+	restartServer := boolFlag(flags, "restart", "R", false, "restart the running server without opening a browser")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -54,23 +55,33 @@ func Run(arguments []string) error {
 	if err := validateListenAddress(*listenAddress); err != nil {
 		return err
 	}
+	if *stopServer && *restartServer {
+		return errors.New("--stop and --restart cannot be used together")
+	}
 
 	lock, err := instance.Acquire(*runtimeDirectory)
-	if *stopServer {
-		if err == nil {
-			return lock.Close()
+	if *stopServer || *restartServer {
+		status, stopErr := stopServerInstance(lock, err, *runtimeDirectory)
+		if stopErr != nil {
+			return stopErr
 		}
-		if !errors.Is(err, instance.ErrAlreadyRunning) {
-			return err
+		if status == nil {
+			fmt.Println("server is not running")
+		} else {
+			fmt.Printf("server stopped (pid %d)\n", status.PID)
 		}
-		status, statusErr := instance.ReadStatus(*runtimeDirectory)
-		if statusErr != nil {
-			return fmt.Errorf("read running server status: %w", statusErr)
+		if *restartServer {
+			if status != nil && status.Managed {
+				fmt.Println("launchd is starting the replacement")
+				return nil
+			}
+			pid, startErr := startDetached(restartArguments(arguments))
+			if startErr != nil {
+				return startErr
+			}
+			fmt.Printf("server replacement started (pid %d)\n", pid)
 		}
-		if signalErr := syscall.Kill(status.PID, syscall.SIGTERM); signalErr != nil && !errors.Is(signalErr, syscall.ESRCH) {
-			return fmt.Errorf("stop running server: %w", signalErr)
-		}
-		return waitForProcessExit(status.PID, processExists, time.Sleep)
+		return nil
 	}
 	if errors.Is(err, instance.ErrAlreadyRunning) {
 		status, statusErr := instance.ReadStatus(*runtimeDirectory)
@@ -113,12 +124,12 @@ func Run(arguments []string) error {
 	}
 	defer listener.Close()
 	url := localURL(listener.Addr())
-	if err := lock.WriteStatus(instance.Status{PID: os.Getpid(), URL: url}); err != nil {
+	if err := lock.WriteStatus(instance.Status{PID: os.Getpid(), URL: url, Managed: os.Getenv("XPC_SERVICE_NAME") != ""}); err != nil {
 		return err
 	}
 
 	server := appserver.New(apps, *runtimeDirectory, *logDirectory, logger)
-	server.StartBackends(context.Background())
+	startBackendsAsync(context.Background(), server.StartBackends)
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- httpServer.Serve(listener) }()
@@ -142,6 +153,57 @@ func Run(arguments []string) error {
 		}
 	}
 	return shutdownServices(server.StopBackends, httpServer.Shutdown)
+}
+
+func startBackendsAsync(ctx context.Context, start func(context.Context)) {
+	go start(ctx)
+}
+
+func stopServerInstance(lock *instance.Lock, acquireErr error, runtimeDirectory string) (*instance.Status, error) {
+	if acquireErr == nil {
+		return nil, lock.Close()
+	}
+	if !errors.Is(acquireErr, instance.ErrAlreadyRunning) {
+		return nil, acquireErr
+	}
+	status, err := instance.ReadStatus(runtimeDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("read running server status: %w", err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return nil, fmt.Errorf("stop running server: %w", err)
+	}
+	if err := waitForProcessExit(status.PID, processExists, time.Sleep); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func restartArguments(arguments []string) []string {
+	restarted := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		if argument == "--restart" || argument == "-R" || strings.HasPrefix(argument, "--restart=") || strings.HasPrefix(argument, "-R=") {
+			continue
+		}
+		if argument == "--open" || argument == "-o" || strings.HasPrefix(argument, "--open=") || strings.HasPrefix(argument, "-o=") {
+			continue
+		}
+		restarted = append(restarted, argument)
+	}
+	return restarted
+}
+
+func startDetached(arguments []string) (int, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("find server executable: %w", err)
+	}
+	command := exec.Command(executable, arguments...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := command.Start(); err != nil {
+		return 0, fmt.Errorf("restart server: %w", err)
+	}
+	return command.Process.Pid, nil
 }
 
 func stopExistingServer(pid int) error {

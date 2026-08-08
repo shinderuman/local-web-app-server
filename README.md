@@ -80,6 +80,7 @@ to finish its own in-progress work.
 local-web-app-server
 local-web-app-server --open
 local-web-app-server --stop
+local-web-app-server --restart
 local-web-app-server --apps /path/to/apps --listen 127.0.0.1:8766
 local-web-app-server --listen 0.0.0.0:8766
 ```
@@ -93,6 +94,7 @@ Every long option has a short form:
 -g, --log-directory
 -o, --open
 -s, --stop
+-R, --restart
 ```
 
 Defaults:
@@ -117,6 +119,10 @@ prevents a replacement backend from overlapping an orphaned predecessor.
 `--stop` sends the running host a graceful termination request and waits for
 all application backends to finish their declared shutdown behavior. It is
 safe to use before replacing installed application binaries.
+
+`--restart` gracefully stops the running host and starts a replacement with
+the same options. It never opens a browser, including when `--open` was also
+passed.
 
 When listening on `0.0.0.0`, the printed/status URL remains the local
 `127.0.0.1` URL. Other computers use

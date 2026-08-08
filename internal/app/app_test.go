@@ -65,12 +65,41 @@ func TestShortFlags(t *testing.T) {
 	flags := flag.NewFlagSet("test", flag.ContinueOnError)
 	text := stringFlag(flags, "apps", "a", "default", "apps")
 	enabled := boolFlag(flags, "open", "o", false, "open")
-	if err := flags.Parse([]string{"-a", "/tmp/apps", "-o"}); err != nil {
+	restart := boolFlag(flags, "restart", "R", false, "restart")
+	if err := flags.Parse([]string{"-a", "/tmp/apps", "-o", "-R"}); err != nil {
 		t.Fatal(err)
 	}
-	if *text != "/tmp/apps" || !*enabled {
-		t.Fatalf("text = %q, enabled = %v", *text, *enabled)
+	if *text != "/tmp/apps" || !*enabled || !*restart {
+		t.Fatalf("text = %q, enabled = %v, restart = %v", *text, *enabled, *restart)
 	}
+}
+
+func TestRestartArgumentsRemovesRestartAndOpen(t *testing.T) {
+	arguments := restartArguments([]string{"--apps", "/tmp/apps", "--restart", "--open", "--listen=0.0.0.0:9000"})
+	want := []string{"--apps", "/tmp/apps", "--listen=0.0.0.0:9000"}
+	if len(arguments) != len(want) {
+		t.Fatalf("restart arguments = %v, want %v", arguments, want)
+	}
+	for index := range want {
+		if arguments[index] != want[index] {
+			t.Fatalf("restart arguments = %v, want %v", arguments, want)
+		}
+	}
+}
+
+func TestStartBackendsAsyncDoesNotBlockServerStartup(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	startBackendsAsync(context.Background(), func(context.Context) {
+		close(started)
+		<-finish
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("backend startup did not begin")
+	}
+	close(finish)
 }
 
 func TestWaitForProcessExit(t *testing.T) {

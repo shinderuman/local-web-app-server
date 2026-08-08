@@ -17,8 +17,9 @@ const (
 var ErrAlreadyRunning = errors.New("local web app server is already running")
 
 type Status struct {
-	PID int    `json:"pid"`
-	URL string `json:"url"`
+	PID     int    `json:"pid"`
+	URL     string `json:"url"`
+	Managed bool   `json:"managed,omitempty"`
 }
 
 type Lock struct {
