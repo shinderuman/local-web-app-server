@@ -23,6 +23,12 @@ func TestValidateListenAddress(t *testing.T) {
 	}
 }
 
+func TestDefaultListenAddressIsLAN(t *testing.T) {
+	if defaultListenAddress != "0.0.0.0:8766" {
+		t.Fatalf("default listen address = %q, want 0.0.0.0:8766", defaultListenAddress)
+	}
+}
+
 func TestShutdownServicesStopsBackendsBeforeHTTP(t *testing.T) {
 	var order []string
 	backendFailure := errors.New("backend failure")

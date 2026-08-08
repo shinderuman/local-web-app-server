@@ -1,13 +1,13 @@
 # Local Web App Server
 
 Local Web App Server hosts small, independently installed local web
-applications on macOS. The host owns loopback HTTP, process lifecycle, static
+applications on macOS. The host owns LAN HTTP, process lifecycle, static
 file isolation, Unix-domain-socket proxying, and local logs. Each application
 owns its UI and backend.
 
 The server deliberately has no TLS, authentication, internet exposure, or
-arbitrary command API. It binds to `127.0.0.1` by default and can explicitly
-bind to `0.0.0.0` for use on a trusted LAN.
+arbitrary command API. It binds to `0.0.0.0` by default for use on a trusted
+LAN. Use `--listen 127.0.0.1:8766` when loopback-only access is required.
 
 ## Build and install
 
@@ -92,14 +92,16 @@ Every long option has a short form:
 
 Defaults:
 
-- Listen address: `127.0.0.1:8766`
+- Listen address: `0.0.0.0:8766`
 - Runtime data: `/private/tmp/local-web-app-server-<uid>`
 - Logs: `~/Library/Logs/LocalWebAppServer`
 
 A second launch detects the running instance, verifies its health endpoint,
-prints its URL, and exits successfully. Backend processes start once with the
-host. A failed backend is shown as unavailable without restarting it or
-affecting other apps.
+prints its URL, and exits successfully. If the recorded instance no longer
+responds, startup sends it a graceful termination signal, force-stops it after
+five seconds if necessary, and retries startup. Backend processes start once
+with the host. A failed backend is shown as unavailable without restarting it
+or affecting other apps.
 
 `--stop` sends the running host a graceful termination request and waits for
 all application backends to finish their declared shutdown behavior. It is

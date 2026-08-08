@@ -40,7 +40,7 @@ func run(arguments []string) error {
 
 	flags := flag.NewFlagSet("local-web-app-server", flag.ContinueOnError)
 	appsDirectory := stringFlag(flags, "apps", "a", defaultApps, "installed app directory")
-	listenAddress := stringFlag(flags, "listen", "l", "127.0.0.1:8766", "HTTP listen address")
+	listenAddress := stringFlag(flags, "listen", "l", defaultListenAddress, "HTTP listen address")
 	runtimeDirectory := stringFlag(flags, "runtime", "r", defaultRuntime, "runtime directory")
 	logDirectory := stringFlag(flags, "log-directory", "g", defaultLogs, "log directory")
 	openBrowser := boolFlag(flags, "open", "o", false, "open the app list in the default browser")
@@ -78,7 +78,10 @@ func run(arguments []string) error {
 			return fmt.Errorf("%w, but its status cannot be read: %v", err, statusErr)
 		}
 		if healthErr := confirmRunning(status.URL); healthErr != nil {
-			return fmt.Errorf("%w, but its health check failed: %v", instance.ErrAlreadyRunning, healthErr)
+			if stopErr := stopExistingServer(status.PID); stopErr != nil {
+				return fmt.Errorf("%w, health check failed: %v, and stale process could not be stopped: %w", instance.ErrAlreadyRunning, healthErr, stopErr)
+			}
+			return run(arguments)
 		}
 		fmt.Println(status.URL)
 		if *openBrowser {
@@ -145,6 +148,31 @@ func run(arguments []string) error {
 	}
 
 	return shutdownServices(server.StopBackends, httpServer.Shutdown)
+}
+
+const staleProcessStopTimeout = 5 * time.Second
+
+const defaultListenAddress = "0.0.0.0:8766"
+
+func stopExistingServer(pid int) error {
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("send termination signal: %w", err)
+	}
+	deadline := time.Now().Add(staleProcessStopTimeout)
+	for time.Now().Before(deadline) {
+		running, err := processExists(pid)
+		if err != nil {
+			return err
+		}
+		if !running {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("force stop server: %w", err)
+	}
+	return waitForProcessExit(pid, processExists, time.Sleep)
 }
 
 func shutdownServices(stopBackends func() error, shutdownHTTP func(context.Context) error) error {
