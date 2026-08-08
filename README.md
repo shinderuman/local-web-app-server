@@ -62,8 +62,13 @@ directory. Symlinks are rejected from the web tree. App IDs use lowercase
 ASCII letters, digits, and internal hyphens.
 
 The backend receives `LOCAL_WEB_SOCKET` and must listen on that Unix socket.
-Requests under `/apps/<id>/api/...` reach the backend as `/api/...`; all other
-app paths are served from `web_root`.
+It also receives `LOCAL_WEB_LIFETIME_FD`, the number of an inherited read-only
+file descriptor. The host keeps the corresponding writer open for its entire
+lifetime. A backend must treat EOF on this descriptor as an abnormal loss of
+the host, stop its work, and exit. Normal host shutdown uses `SIGTERM` while the
+lifetime descriptor remains open, so application-specific graceful shutdown is
+unchanged. Requests under `/apps/<id>/api/...` reach the backend as `/api/...`;
+all other app paths are served from `web_root`.
 
 `shutdown_timeout_seconds` is optional and defaults to 10 seconds. A value of
 zero waits indefinitely for graceful backend shutdown, allowing an application
@@ -102,6 +107,12 @@ responds, startup sends it a graceful termination signal, force-stops it after
 five seconds if necessary, and retries startup. Backend processes start once
 with the host. A failed backend is shown as unavailable without restarting it
 or affecting other apps.
+
+If the host exits without its normal shutdown path, the kernel closes every
+backend lifetime descriptor. On the next host start, an existing live backend
+socket is not unlinked: startup waits up to five seconds for the prior backend
+to observe EOF and exit. Only an unreachable stale socket is removed. This
+prevents a replacement backend from overlapping an orphaned predecessor.
 
 `--stop` sends the running host a graceful termination request and waits for
 all application backends to finish their declared shutdown behavior. It is
