@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -10,11 +10,10 @@ import (
 )
 
 func TestValidateListenAddress(t *testing.T) {
-	if err := validateListenAddress("127.0.0.1:8765"); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateListenAddress("0.0.0.0:8765"); err != nil {
-		t.Fatal(err)
+	for _, address := range []string{"127.0.0.1:8765", "0.0.0.0:8765"} {
+		if err := validateListenAddress(address); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, address := range []string{"localhost:8765", "[::1]:8765", "invalid"} {
 		if err := validateListenAddress(address); err == nil {
@@ -25,18 +24,14 @@ func TestValidateListenAddress(t *testing.T) {
 
 func TestDefaultListenAddressIsLAN(t *testing.T) {
 	if defaultListenAddress != "0.0.0.0:8766" {
-		t.Fatalf("default listen address = %q, want 0.0.0.0:8766", defaultListenAddress)
+		t.Fatalf("default listen address = %q", defaultListenAddress)
 	}
 }
 
 func TestShutdownServicesStopsBackendsBeforeHTTP(t *testing.T) {
 	var order []string
-	backendFailure := errors.New("backend failure")
-	httpFailure := errors.New("HTTP failure")
-	err := shutdownServices(func() error {
-		order = append(order, "backends")
-		return backendFailure
-	}, func(ctx context.Context) error {
+	backendFailure, httpFailure := errors.New("backend failure"), errors.New("HTTP failure")
+	err := shutdownServices(func() error { order = append(order, "backends"); return backendFailure }, func(ctx context.Context) error {
 		if ctx == nil {
 			t.Fatal("shutdown context is nil")
 		}
@@ -52,14 +47,7 @@ func TestShutdownServicesStopsBackendsBeforeHTTP(t *testing.T) {
 }
 
 func TestLocalURL(t *testing.T) {
-	tests := []struct {
-		address string
-		want    string
-	}{
-		{"127.0.0.1:8765", "http://127.0.0.1:8765"},
-		{"0.0.0.0:8765", "http://127.0.0.1:8765"},
-	}
-	for _, test := range tests {
+	for _, test := range []struct{ address, want string }{{"127.0.0.1:8765", "http://127.0.0.1:8765"}, {"0.0.0.0:8765", "http://127.0.0.1:8765"}} {
 		if got := localURL(fakeAddress(test.address)); got != test.want {
 			t.Errorf("localURL(%q) = %q, want %q", test.address, got, test.want)
 		}
@@ -86,8 +74,7 @@ func TestShortFlags(t *testing.T) {
 }
 
 func TestWaitForProcessExit(t *testing.T) {
-	checks := 0
-	pauses := 0
+	checks, pauses := 0, 0
 	err := waitForProcessExit(42, func(pid int) (bool, error) {
 		if pid != 42 {
 			t.Fatalf("pid = %d", pid)
@@ -106,13 +93,8 @@ func TestWaitForProcessExit(t *testing.T) {
 	if checks != 3 || pauses != 2 {
 		t.Fatalf("checks = %d, pauses = %d", checks, pauses)
 	}
-
 	expected := errors.New("failure")
-	err = waitForProcessExit(42, func(int) (bool, error) {
-		return false, expected
-	}, func(time.Duration) {
-		t.Fatal("unexpected pause")
-	})
+	err = waitForProcessExit(42, func(int) (bool, error) { return false, expected }, func(time.Duration) { t.Fatal("unexpected pause") })
 	if !errors.Is(err, expected) {
 		t.Fatalf("waitForProcessExit() error = %v", err)
 	}
