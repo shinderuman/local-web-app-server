@@ -71,10 +71,6 @@ func Run(arguments []string) error {
 			fmt.Printf("server stopped (pid %d)\n", status.PID)
 		}
 		if *restartServer {
-			if status != nil && status.Managed {
-				fmt.Println("launchd is starting the replacement")
-				return nil
-			}
 			pid, startErr := startDetached(restartArguments(arguments))
 			if startErr != nil {
 				return startErr
@@ -124,7 +120,7 @@ func Run(arguments []string) error {
 	}
 	defer listener.Close()
 	url := localURL(listener.Addr())
-	if err := lock.WriteStatus(instance.Status{PID: os.Getpid(), URL: url, Managed: os.Getenv("XPC_SERVICE_NAME") != ""}); err != nil {
+	if err := lock.WriteStatus(instance.Status{PID: os.Getpid(), URL: url}); err != nil {
 		return err
 	}
 

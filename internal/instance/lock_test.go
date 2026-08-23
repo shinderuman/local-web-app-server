@@ -16,7 +16,7 @@ func TestLockAndStatus(t *testing.T) {
 	if _, err := Acquire(runtimeDirectory); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("second acquire error = %v", err)
 	}
-	want := Status{PID: 123, URL: "http://127.0.0.1:8765", Managed: true}
+	want := Status{PID: 123, URL: "http://127.0.0.1:8765"}
 	if err := lock.WriteStatus(want); err != nil {
 		t.Fatal(err)
 	}

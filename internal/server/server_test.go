@@ -154,6 +154,38 @@ func TestBackendExitsWhenHostLifetimeEndsAndCanBeReplaced(t *testing.T) {
 	}
 }
 
+func TestBackendRecoveryStopsOrphanedBackend(t *testing.T) {
+	appsDirectory := t.TempDir()
+	writeIntegrationApp(t, appsDirectory, "alpha", "alpha", "Alpha", "alpha page", filepath.Join(t.TempDir(), "unused"))
+	t.Setenv("GO_LOCAL_WEB_IGNORE_LIFETIME", "1")
+	apps, err := config.LoadApps(appsDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDirectory, err := os.MkdirTemp("/private/tmp", "lwas-orphan-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDirectory) })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	first := New(apps, runtimeDirectory, t.TempDir(), logger)
+	first.StartBackends(context.Background())
+	orphan := first.backends["alpha"]
+	if status := orphan.Status(); status.State != "ready" {
+		t.Fatalf("orphan backend status = %#v", status)
+	}
+
+	second := New(apps, runtimeDirectory, t.TempDir(), logger)
+	second.StartBackends(context.Background())
+	if status := second.backends["alpha"].Status(); status.State != "ready" {
+		t.Fatalf("replacement backend status = %#v", status)
+	}
+	if err := second.StopBackends(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStaticHandlerRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("safe"), 0o644); err != nil {
@@ -229,7 +261,7 @@ func TestHelperBackend(t *testing.T) {
 		return
 	}
 	marker := os.Args[len(os.Args)-1]
-	if value := os.Getenv(lifetimeFDEnvironment); value != "" {
+	if value := os.Getenv(lifetimeFDEnvironment); value != "" && os.Getenv("GO_LOCAL_WEB_IGNORE_LIFETIME") != "1" {
 		fd, err := strconv.Atoi(value)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

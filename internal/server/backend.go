@@ -36,6 +36,7 @@ type BackendStatus struct {
 type backend struct {
 	app          config.App
 	socketPath   string
+	pidPath      string
 	logDirectory string
 	logger       *slog.Logger
 	mu           sync.RWMutex
@@ -68,6 +69,7 @@ func newBackend(app config.App, runtimeDirectory, logDirectory string, logger *s
 	return &backend{
 		app:          app,
 		socketPath:   socketPath,
+		pidPath:      filepath.Join(runtimeDirectory, app.Manifest.ID+".pid"),
 		logDirectory: logDirectory,
 		logger:       logger,
 		state:        "stopped",
@@ -78,6 +80,9 @@ func newBackend(app config.App, runtimeDirectory, logDirectory string, logger *s
 func (backend *backend) Start(ctx context.Context) error {
 	if len([]byte(backend.socketPath)) > 100 {
 		return backend.fail(fmt.Errorf("unix socket path is too long: %s", backend.socketPath))
+	}
+	if err := recoverPreviousBackend(ctx, backend.pidPath); err != nil {
+		return backend.fail(err)
 	}
 	if err := waitForPreviousBackend(ctx, backend.socketPath); err != nil {
 		return backend.fail(err)
@@ -106,6 +111,13 @@ func (backend *backend) Start(ctx context.Context) error {
 		return backend.fail(fmt.Errorf("start backend: %w", err))
 	}
 	_ = lifetimeReader.Close()
+	if err := writeBackendPID(backend.pidPath, command.Process.Pid); err != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		_ = command.Wait()
+		_ = lifetimeWriter.Close()
+		_ = logFile.Close()
+		return backend.fail(err)
+	}
 
 	backend.mu.Lock()
 	backend.command = command
@@ -124,6 +136,7 @@ func (backend *backend) Start(ctx context.Context) error {
 		_ = lifetimeWriter.Close()
 		_ = logFile.Close()
 		_ = os.Remove(backend.socketPath)
+		_ = removeBackendPID(backend.pidPath, command.Process.Pid)
 		backend.mu.Lock()
 		if backend.stopping {
 			backend.state = "stopped"
@@ -167,6 +180,89 @@ func (backend *backend) Start(ctx context.Context) error {
 		case <-readinessContext.Done():
 			_ = backend.Stop()
 			return backend.fail(fmt.Errorf("backend readiness timeout: %w", readinessContext.Err()))
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+func recoverPreviousBackend(ctx context.Context, pidPath string) error {
+	pid, err := readBackendPID(pidPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read previous backend PID: %w", err)
+	}
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("stop previous backend process group: %w", err)
+	}
+	waitContext, cancel := context.WithTimeout(ctx, previousBackendWaitTimeout)
+	defer cancel()
+	if err := waitForProcessExit(waitContext, pid); err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if killErr := syscall.Kill(-pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+			return fmt.Errorf("kill previous backend process group: %w", killErr)
+		}
+		if err := waitForProcessExit(context.Background(), pid); err != nil {
+			return err
+		}
+	}
+	if err := removeBackendPID(pidPath, pid); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeBackendPID(path string, pid int) error {
+	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		return fmt.Errorf("write backend PID: %w", err)
+	}
+	return nil
+}
+
+func readBackendPID(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, errors.New("invalid backend PID")
+	}
+	return pid, nil
+}
+
+func removeBackendPID(path string, pid int) error {
+	current, err := readBackendPID(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read backend PID for removal: %w", err)
+	}
+	if current != pid {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove backend PID: %w", err)
+	}
+	return nil
+}
+
+func waitForProcessExit(ctx context.Context, pid int) error {
+	for {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect previous backend process: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(25 * time.Millisecond):
 		}
 	}
