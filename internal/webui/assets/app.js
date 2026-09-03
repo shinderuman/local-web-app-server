@@ -15,6 +15,8 @@ function render(apps) {
     const card = document.createElement("a");
     card.className = "app";
     card.href = app.url;
+    card.target = "_blank";
+    card.rel = "noopener";
 
     const heading = document.createElement("h2");
     heading.textContent = app.name;
