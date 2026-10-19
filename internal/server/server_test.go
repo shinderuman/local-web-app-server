@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -261,6 +263,16 @@ func TestHelperBackend(t *testing.T) {
 		return
 	}
 	marker := os.Args[len(os.Args)-1]
+	if delay := os.Getenv("GO_LOCAL_WEB_START_DELAY"); delay != "" {
+		duration, err := time.ParseDuration(delay)
+		if err != nil {
+			os.Exit(2)
+		}
+		if os.Getenv("GO_LOCAL_WEB_IGNORE_TERM") == "1" {
+			signal.Ignore(syscall.SIGTERM)
+		}
+		time.Sleep(duration)
+	}
 	if value := os.Getenv(lifetimeFDEnvironment); value != "" && os.Getenv("GO_LOCAL_WEB_IGNORE_LIFETIME") != "1" {
 		fd, err := strconv.Atoi(value)
 		if err != nil {

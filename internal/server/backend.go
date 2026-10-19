@@ -25,6 +25,10 @@ import (
 const (
 	lifetimeFDEnvironment      = "LOCAL_WEB_LIFETIME_FD"
 	previousBackendWaitTimeout = 5 * time.Second
+	backendReadinessTimeout    = 60 * time.Second
+	backendReadinessInterval   = 100 * time.Millisecond
+	backendStartupLogInterval  = 5 * time.Second
+	backendStartupStopTimeout  = 5 * time.Second
 )
 
 type BackendStatus struct {
@@ -160,27 +164,46 @@ func (backend *backend) Start(ctx context.Context) error {
 		}
 	}()
 
-	readinessContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	readinessContext, cancel := context.WithTimeout(ctx, backendReadinessTimeout)
 	defer cancel()
+	return backend.waitUntilReady(readinessContext, done, logFile.Name())
+}
+
+func (backend *backend) waitUntilReady(ctx context.Context, done <-chan struct{}, logPath string) error {
+	started := time.Now()
+	checks := time.NewTicker(backendReadinessInterval)
+	defer checks.Stop()
+	progress := time.NewTicker(backendStartupLogInterval)
+	defer progress.Stop()
 	for {
-		connection, dialErr := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(readinessContext, "unix", backend.socketPath)
+		select {
+		case <-done:
+			return fmt.Errorf("backend exited before it became ready: %s (log: %s)", backend.Status().LastError, logPath)
+		default:
+		}
+		connection, dialErr := (&net.Dialer{Timeout: backendReadinessInterval}).DialContext(ctx, "unix", backend.socketPath)
 		if dialErr == nil {
 			_ = connection.Close()
 			backend.mu.Lock()
 			if backend.state == "starting" {
 				backend.state = "ready"
+				backend.mu.Unlock()
+				backend.logger.Info("backend ready", "app", backend.app.Manifest.ID, "elapsed", time.Since(started))
+				return nil
 			}
 			backend.mu.Unlock()
-			return nil
+			return fmt.Errorf("backend stopped before it became ready (log: %s)", logPath)
 		}
 		select {
 		case <-done:
 			status := backend.Status()
-			return fmt.Errorf("backend exited before it became ready: %s", status.LastError)
-		case <-readinessContext.Done():
-			_ = backend.Stop()
-			return backend.fail(fmt.Errorf("backend readiness timeout: %w", readinessContext.Err()))
-		case <-time.After(25 * time.Millisecond):
+			return fmt.Errorf("backend exited before it became ready: %s (log: %s)", status.LastError, logPath)
+		case <-ctx.Done():
+			stopErr := backend.stop(backendStartupStopTimeout)
+			return backend.fail(errors.Join(fmt.Errorf("backend readiness failed after %s: %w (log: %s)", time.Since(started).Round(time.Millisecond), ctx.Err(), logPath), stopErr))
+		case <-progress.C:
+			backend.logger.Info("waiting for backend readiness", "app", backend.app.Manifest.ID, "elapsed", time.Since(started).Round(time.Second), "log", logPath)
+		case <-checks.C:
 		}
 	}
 }
@@ -311,6 +334,10 @@ func waitForPreviousBackend(ctx context.Context, socketPath string) error {
 }
 
 func (backend *backend) Stop() error {
+	return backend.stop(time.Duration(config.ShutdownTimeoutSeconds(backend.app.Manifest)) * time.Second)
+}
+
+func (backend *backend) stop(timeout time.Duration) error {
 	backend.mu.Lock()
 	if backend.command == nil || backend.done == nil {
 		backend.state = "stopped"
@@ -330,12 +357,11 @@ func (backend *backend) Stop() error {
 	backend.mu.Unlock()
 
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	timeoutSeconds := config.ShutdownTimeoutSeconds(backend.app.Manifest)
-	if timeoutSeconds == 0 {
+	if timeout == 0 {
 		<-done
 		return nil
 	}
-	timer := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-done:
